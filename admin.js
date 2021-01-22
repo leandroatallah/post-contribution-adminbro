@@ -1,4 +1,6 @@
 require('dotenv').config()
+const bcrypt = require('bcrypt');
+
 
 // ADMIN BRO
 const AdminBro = require('admin-bro')
@@ -13,6 +15,8 @@ AdminBro.registerAdapter(AdminBroMongoose)
 const UserSchema = new mongoose.Schema({
     name: String,
     email: String,
+    role: { type: String, enum: ['admin', 'restricted'], required: true },
+    encryptedPassword: { type: String, required: true },
     created_at: { type: Date, default: Date.now }
 })
 const User = mongoose.model('User', UserSchema)
@@ -28,21 +32,38 @@ const PostSchema = new mongoose.Schema({
 const Post = mongoose.model('Post', PostSchema)
 
 const AdminBroOptions = new AdminBro({
+    dashboard: {
+        // component: AdminBro.bundle('./components/social-media')
+    },
     resources: [
         {
             resource: User,
             options: {
-                actions: {
-                    show: {
-                        icon: 'View',
-                        isVisible: (context) => context.record.param('email') !== '',
-                    }
-                },
                 properties: {
+                    encryptedPassword: {
+                        isVisible: false
+                    },
+                    password: {
+                        isVisible: { list: false, edit: true, show: false, filter: false }
+                    },
                     created_at: {
                         isVisible: { edit: false, list: true, show: true, filter: true }
                     }
                 },
+                actions: {
+                    new: {
+                        before: async (request) => {
+                            if(request.payload.password) {
+                                request.payload = {
+                                    ...request.payload,
+                                    encryptedPassword: await bcrypt.hash(request.payload.password, 10),
+                                    password: undefined
+                                }
+                            }
+                            return request
+                        }
+                    }
+                }
             }
         },
         {
@@ -73,7 +94,19 @@ const run = async () => {
         useUnifiedTopology: true
     })
 
-    const router = AdminBroExpress.buildRouter(AdminBroOptions)
+    const router = AdminBroExpress.buildAuthenticatedRouter(AdminBroOptions, {
+        authenticate: async (email, password) => {
+            const user = await User.findOne({ email })
+            if(user) {
+                const matched = await bcrypt.compare(password, user.encryptedPassword)
+                if(matched) {
+                    return user
+                }
+            }
+            return false
+        },
+        cookiePassword: 'some-secure-password-used-to-secure-cookie'
+    })
 
     app.use(AdminBroOptions.options.rootPath, router)
     app.listen(8080, () => console.log('AdminBro is under localhost:8080/admin'))
